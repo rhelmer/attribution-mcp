@@ -1,0 +1,16 @@
+[project]
+name = "bluesky-mcp"
+version = "0.1.0"
+description = "MCP server for Bluesky"
+requires-python = ">=3.8"
+dependencies = ["mcp", "atproto", "attribution-schema>=0.1.0", "attribution-cache>=0.1.0"]
+
+[project.scripts]
+bluesky-mcp = "bluesky_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bluesky_mcp"]

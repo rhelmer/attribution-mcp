@@ -1,0 +1,20 @@
+.env
+
+# Cache files
+.attribution_cache.db
+*.pyc
+__pycache__/
+
+# OAuth tokens
+.gsc_token.json
+*_token.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.gemini/
