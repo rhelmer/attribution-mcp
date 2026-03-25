@@ -1,9 +1,9 @@
 [project]
-name = "umami-mcp"
+name = "attribution-mcp"
 version = "1.0.0"
-description = "A zero-dependency MCP server for Umami Analytics"
-readme = "packages/umami-mcp/README.md"
-requires-python = ">=3.8"
+description = "MCP servers for social media and analytics platforms"
+readme = "README.md"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
     { name = "Your Name", email = "your.email@example.com" }
@@ -30,3 +30,16 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["packages/umami-mcp/src/umami_mcp"]
+
+[tool.uv.workspace]
+members = [
+    "packages/umami-mcp",
+    "packages/gsc-mcp",
+    "packages/bluesky-mcp",
+    "packages/mastodon-mcp",
+    "packages/linkedin-mcp",
+    "packages/instagram-mcp",
+    "packages/youtube-mcp",
+    "libs/attribution-schema",
+    "libs/attribution-cache",
+]
