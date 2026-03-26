@@ -278,10 +278,12 @@ class UmamiClient:
             "timezone": timezone,
         }
         query = "&".join(f"{k}={v}" for k, v in params.items())
-        # Add filter as JSON in the filters parameter
+        # Add filter as JSON in the filters parameter (URL-encoded)
+        import urllib.parse
         filters = {utm_param: True}
-        filter_query = f"&filters={json.dumps(filters)}"
-        return self._make_request(f"/api/websites/{website_id}/stats?{query}{filter_query}")
+        filters_json = json.dumps(filters, separators=(',', ':'))  # No spaces
+        filters_encoded = urllib.parse.quote(filters_json, safe='')
+        return self._make_request(f"/api/websites/{website_id}/stats?{query}&filters={filters_encoded}")
 
     def get_active_visitors(self, website_id: str) -> Dict[str, Any]:
         """Get number of active visitors in the last 5 minutes"""
