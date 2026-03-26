@@ -202,7 +202,7 @@ class MCPServer:
             },
             {
                 "name": "get_utm_metrics",
-                "description": "Get UTM parameter metrics (utm_source, utm_medium, utm_campaign, utm_content, utm_term)",
+                "description": "Get total stats for sessions containing a specific UTM parameter type. Note: Returns aggregate totals, not breakdown by value.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -235,6 +235,32 @@ class MCPServer:
                         },
                     },
                     "required": ["website_id", "start_at", "end_at", "utm_type"],
+                },
+            },
+            {
+                "name": "get_query_metrics",
+                "description": "Get breakdown of URL query parameters (includes UTM parameters like ?utm_source=google&utm_campaign=spring)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "website_id": {
+                            "type": "string",
+                            "description": "The website ID",
+                        },
+                        "start_at": {
+                            "type": "string",
+                            "description": "Start date in ISO format",
+                        },
+                        "end_at": {
+                            "type": "string",
+                            "description": "End date in ISO format",
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Timezone for the query",
+                        },
+                    },
+                    "required": ["website_id", "start_at", "end_at"],
                 },
             },
             {
@@ -355,6 +381,15 @@ class MCPServer:
                 start_at=args["start_at"],
                 end_at=args["end_at"],
                 utm_type=args["utm_type"],
+                timezone=args.get("timezone", "UTC"),
+            )
+
+        elif tool_name == "get_query_metrics":
+            return self.client.get_metrics(
+                website_id=args["website_id"],
+                start_at=args["start_at"],
+                end_at=args["end_at"],
+                metric_type="query",
                 timezone=args.get("timezone", "UTC"),
             )
 

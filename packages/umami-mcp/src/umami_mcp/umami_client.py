@@ -260,7 +260,7 @@ class UmamiClient:
                 f"Invalid UTM type: {utm_type}. Must be one of: {valid_types}"
             )
 
-        # Map snake_case utm_type to camelCase for API
+        # Map snake_case utm_type to camelCase for API filter
         utm_param_map = {
             "utm_source": "utmSource",
             "utm_medium": "utmMedium",
@@ -270,7 +270,8 @@ class UmamiClient:
         }
         utm_param = utm_param_map[utm_type]
 
-        # UTM parameters are passed as filters to the stats endpoint
+        # Get stats filtered to only sessions with this UTM parameter
+        import urllib.parse
         params = {
             "websiteId": website_id,
             "startAt": self._parse_date(start_at),
@@ -278,10 +279,9 @@ class UmamiClient:
             "timezone": timezone,
         }
         query = "&".join(f"{k}={v}" for k, v in params.items())
-        # Add filter as JSON in the filters parameter (URL-encoded)
-        import urllib.parse
+        # Filter to sessions that have this UTM parameter set
         filters = {utm_param: True}
-        filters_json = json.dumps(filters, separators=(',', ':'))  # No spaces
+        filters_json = json.dumps(filters, separators=(',', ':'))
         filters_encoded = urllib.parse.quote(filters_json, safe='')
         return self._make_request(f"/api/websites/{website_id}/stats?{query}&filters={filters_encoded}")
 
