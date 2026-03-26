@@ -260,15 +260,28 @@ class UmamiClient:
                 f"Invalid UTM type: {utm_type}. Must be one of: {valid_types}"
             )
 
+        # Map snake_case utm_type to camelCase for API
+        utm_param_map = {
+            "utm_source": "utmSource",
+            "utm_medium": "utmMedium",
+            "utm_campaign": "utmCampaign",
+            "utm_content": "utmContent",
+            "utm_term": "utmTerm",
+        }
+        utm_param = utm_param_map[utm_type]
+
+        # UTM parameters are passed as filters to the stats endpoint
         params = {
             "websiteId": website_id,
             "startAt": self._parse_date(start_at),
             "endAt": self._parse_date(end_at),
-            "type": utm_type,
             "timezone": timezone,
         }
         query = "&".join(f"{k}={v}" for k, v in params.items())
-        return self._make_request(f"/api/websites/{website_id}/metrics?{query}")
+        # Add filter as JSON in the filters parameter
+        filters = {utm_param: True}
+        filter_query = f"&filters={json.dumps(filters)}"
+        return self._make_request(f"/api/websites/{website_id}/stats?{query}{filter_query}")
 
     def get_active_visitors(self, website_id: str) -> Dict[str, Any]:
         """Get number of active visitors in the last 5 minutes"""
