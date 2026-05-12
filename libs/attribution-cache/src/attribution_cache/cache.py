@@ -1,4 +1,8 @@
-"""SQLite-based caching for analytics API responses."""
+"""SQLite-based caching for analytics API responses.
+
+Account-aware: cache keys now include `account` so data from different
+profiles on the same platform doesn't collide.
+"""
 
 import sqlite3
 import json
@@ -10,7 +14,7 @@ from attribution_schema import Metric
 
 
 class Cache:
-    """SQLite cache for metrics data."""
+    """SQLite cache for metrics data with account isolation."""
 
     def __init__(self, db_path: Optional[str] = None):
         # Use absolute path based on current working directory
@@ -20,26 +24,28 @@ class Cache:
         self._init_db()
 
     def _init_db(self):
-        """Initialize database schema."""
+        """Initialize database schema with account column."""
         conn = sqlite3.connect(self.db_path)
         try:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS metrics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     source TEXT NOT NULL,
+                    account TEXT NOT NULL DEFAULT 'default',
                     date DATE NOT NULL,
                     metric_type TEXT NOT NULL,
                     dimensions_hash TEXT NOT NULL,
                     value REAL NOT NULL,
                     dimensions_json TEXT NOT NULL,
                     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(source, date, metric_type, dimensions_hash)
+                    UNIQUE(source, account, date, metric_type, dimensions_hash)
                 )
             """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS content (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     source TEXT NOT NULL,
+                    account TEXT NOT NULL DEFAULT 'default',
                     content_id TEXT NOT NULL,
                     content_type TEXT NOT NULL,
                     url TEXT,
@@ -47,7 +53,7 @@ class Cache:
                     created_at TIMESTAMP,
                     data_json TEXT NOT NULL,
                     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(source, content_id)
+                    UNIQUE(source, account, content_id)
                 )
             """)
             conn.commit()
@@ -65,18 +71,29 @@ class Cache:
         source: str,
         start_date: date,
         end_date: date,
+        account: str = "default",
         max_age_hours: int = 1
     ) -> List[Metric]:
-        """Fetch cached metrics if fresh enough."""
+        """Fetch cached metrics if fresh enough.
+
+        Now filters by account so different profiles don't share cache.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.execute("""
-            SELECT source, date, metric_type, value, dimensions_json
+            SELECT source, date, metric_type, value, dimensions_json, account
             FROM metrics
             WHERE source = ?
+            AND account = ?
             AND date >= ?
             AND date <= ?
             AND fetched_at >= datetime('now', ?)
-        """, (source, start_date.isoformat(), end_date.isoformat(), f'-{max_age_hours} hours'))
+        """, (
+            source,
+            account,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            f'-{max_age_hours} hours',
+        ))
 
         metrics = []
         for row in cursor.fetchall():
@@ -85,21 +102,23 @@ class Cache:
                 date=date.fromisoformat(row[1]),
                 metric_type=row[2],
                 value=row[3],
-                dimensions=json.loads(row[4])
+                dimensions=json.loads(row[4]),
+                account=row[5],
             ))
         conn.close()
         return metrics
 
     def set_metrics(self, metrics: List[Metric]):
-        """Store metrics in cache."""
+        """Store metrics in cache with account tracking."""
         conn = sqlite3.connect(self.db_path)
         for m in metrics:
             conn.execute("""
                 INSERT OR REPLACE INTO metrics
-                (source, date, metric_type, dimensions_hash, value, dimensions_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (source, account, date, metric_type, dimensions_hash, value, dimensions_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 m.source,
+                m.account,
                 m.date.isoformat(),
                 m.metric_type,
                 self._dimensions_hash(m.dimensions),

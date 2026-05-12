@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "MCP server for Bluesky"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["mcp", "atproto", "attribution-schema>=0.1.0", "attribution-cache>=0.1.0"]
+dependencies = ["mcp", "atproto", "attribution-schema>=0.1.0", "attribution-cache>=0.1.0", "attribution-profiles>=0.1.0"]
 
 [project.scripts]
 bluesky-mcp = "bluesky_mcp.server:main"
@@ -19,3 +19,4 @@ packages = ["src/bluesky_mcp"]
 [tool.uv.sources]
 attribution-schema = { workspace = true }
 attribution-cache = { workspace = true }
+attribution-profiles = { workspace = true }

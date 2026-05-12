@@ -1,0 +1,9 @@
+[project]
+name = "attribution-profiles"
+version = "0.1.0"
+description = "Multi-account profile discovery for attribution analytics"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

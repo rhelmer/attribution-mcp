@@ -1,6 +1,6 @@
 [project]
 name = "attribution-mcp"
-version = "1.0.0"
+version = "2.0.0"
 description = "MCP servers for social media and analytics platforms"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,12 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "aiohttp>=3.13.5",
+    "mcp>=1.26.0",
+    "python-dotenv>=1.2.2",
 ]
 
 [project.scripts]
@@ -42,4 +48,21 @@ members = [
     "packages/youtube-mcp",
     "libs/attribution-schema",
     "libs/attribution-cache",
+    "libs/attribution-profiles",
+]
+
+[tool.uv.sources]
+attribution-profiles = { workspace = true }
+mastodon-mcp = { workspace = true }
+bluesky-mcp = { workspace = true }
+gsc-mcp = { workspace = true }
+youtube-mcp = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "attribution-profiles",
+    "bluesky-mcp",
+    "gsc-mcp",
+    "mastodon-mcp",
+    "youtube-mcp",
 ]

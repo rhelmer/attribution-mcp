@@ -1,14 +1,19 @@
 """
-Unified Multi-Platform Analytics MCP Server
+Unified Multi-Platform Analytics MCP Server with multi-account support.
 
-Aggregates data from multiple analytics platforms:
-- Umami (web analytics)
-- Google Search Console (search performance)
-- YouTube (video analytics)
-- Mastodon (social engagement)
-- Bluesky (social engagement)
-- LinkedIn (professional social)
-- Instagram/Threads (social engagement)
+Aggregates data from multiple analytics platforms, each with multiple
+named profiles (accounts):
+
+    - Umami (web analytics)
+    - Google Search Console (search performance)
+    - YouTube (video analytics)
+    - Mastodon (social engagement)
+    - Bluesky (social engagement)
+    - LinkedIn (professional social)
+    - Instagram/Threads (social engagement)
+
+Each connector can be instantiated per-profile. Profile names are discovered
+automatically from env vars using the ``__PROFILE`` suffix convention.
 """
 
 import os
@@ -18,29 +23,30 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Type
 from importlib import import_module
 
+from attribution_profiles import all_platform_profiles, resolve_env
+
 
 class MultiPlatformServer:
-    """MCP Server that aggregates multiple analytics platforms."""
+    """MCP Server that aggregates multiple analytics platforms with multi-account."""
 
     def __init__(self):
+        # Key: "{platform}:{profile}"  —  e.g. "mastodon:default", "mastodon:STELLARWHISKERS"
         self.connectors: Dict[str, Any] = {}
+        self.platform_profiles: Dict[str, list[str]] = {}
         self.initialized = False
         self._load_connectors()
 
     def _log(self, message: str) -> None:
-        """Log debug message to stderr"""
         sys.stderr.write(f"[multi-platform-mcp] {message}\n")
         sys.stderr.flush()
 
     def _send_response(self, response: Dict[str, Any]) -> None:
-        """Send JSON-RPC response to stdout"""
         sys.stdout.write(json.dumps(response) + "\n")
         sys.stdout.flush()
 
     def _error_response(
         self, request_id: Any, code: int, message: str
     ) -> Dict[str, Any]:
-        """Create error response"""
         return {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -48,76 +54,115 @@ class MultiPlatformServer:
         }
 
     def _success_response(self, request_id: Any, result: Any) -> Dict[str, Any]:
-        """Create success response"""
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
     def _load_connectors(self) -> None:
-        """Dynamically load available connectors."""
-
-        # Map of platform names to their module paths
+        """Dynamically load connectors for each discovered (platform, profile) pair."""
+        # Map of platform names to their module paths and connector class names
         platform_modules = {
-            "umami": "umami_mcp.server",
-            "gsc": "gsc_mcp.server",
-            "youtube": "youtube_mcp.server",
-            "mastodon": "mastodon_mcp.server",
-            "bluesky": "bluesky_mcp.server",
-            "linkedin": "linkedin_mcp.server",
-            "instagram": "instagram_mcp.server",
+            "umami": {
+                "module": "umami_mcp.server",
+                "connector": "UmamiClient",
+                "needs_profile_init": True,
+            },
+            "gsc": {
+                "module": "gsc_mcp.server",
+                "connector": "GSCConnector",
+                "needs_profile_init": False,
+            },
+            "youtube": {
+                "module": "youtube_mcp.server",
+                "connector": "YouTubeConnector",
+                "needs_profile_init": False,
+            },
+            "mastodon": {
+                "module": "mastodon_mcp.server",
+                "connector": "MastodonConnector",
+                "needs_profile_init": True,
+            },
+            "bluesky": {
+                "module": "bluesky_mcp.server",
+                "connector": "BlueskyConnector",
+                "needs_profile_init": True,
+            },
+            "linkedin": {
+                "module": "linkedin_mcp.server",
+                "connector": "LinkedInConnector",
+                "needs_profile_init": False,
+            },
+            "instagram": {
+                "module": "instagram_mcp.server",
+                "connector": "InstagramConnector",
+                "needs_profile_init": False,
+            },
         }
 
-        for platform, module_path in platform_modules.items():
+        # Discover all profiles for all platforms
+        all_configs = all_platform_profiles()
+        self._log(f"Discovered platform profiles: {all_configs}")
+
+        for platform, info in platform_modules.items():
+            platform_configs = all_configs.get(platform, [])
+
+            if not platform_configs:
+                self._log(f"Skipping {platform}: no profiles configured")
+                continue
+
             try:
-                # Check if environment variables are set for this platform
-                if not self._platform_configured(platform):
-                    self._log(f"Skipping {platform}: credentials not configured")
+                module = import_module(info["module"])
+                connector_class = getattr(module, info["connector"], None)
+                if not connector_class:
+                    self._log(f"Could not find {info['connector']} in {info['module']}")
                     continue
 
-                # Import the module
-                module = import_module(module_path)
+                for config in platform_configs:
+                    profile = config["profile"]
+                    key = f"{platform}:{profile}"
 
-                # Get the connector class (naming convention: {Platform}Connector)
-                connector_class_name = f"{platform.capitalize()}Connector"
-                if platform == "gsc":
-                    connector_class_name = "GSCConnector"
-                elif platform == "umami":
-                    connector_class_name = "UmamiClient"
+                    try:
+                        if info["needs_profile_init"]:
+                            # Connector accepts a `profile` kwarg
+                            conn = connector_class(profile=profile)
+                        elif platform == "umami":
+                            # UmamiClient takes explicit args
+                            conn = connector_class(
+                                base_url=config.get("url", ""),
+                                api_key=config.get("api_key"),
+                                username=config.get("username"),
+                                password=config.get("password"),
+                                team_id=config.get("team_id"),
+                            )
+                        else:
+                            # Falls back to env-var-based init (single-account)
+                            if profile != "default":
+                                # Connector doesn't support profiles yet — skip non-default
+                                self._log(
+                                    f"  {platform}:{profile} — connector doesn't support "
+                                    f"multi-account, skipped"
+                                )
+                                continue
+                            conn = connector_class()
 
-                connector_class = getattr(module, connector_class_name, None)
-                if connector_class:
-                    self.connectors[platform] = connector_class()
-                    self._log(f"Loaded connector: {platform}")
+                        self.connectors[key] = conn
+                        self._log(f"  Loaded connector: {key}")
+
+                    except Exception as e:
+                        self._log(f"  Error loading {key}: {e}")
 
             except ImportError as e:
-                self._log(f"Could not load {platform} connector: {e}")
+                self._log(f"Could not load {platform} module: {e}")
             except Exception as e:
-                self._log(f"Error loading {platform} connector: {e}")
-
-    def _platform_configured(self, platform: str) -> bool:
-        """Check if a platform has required environment variables set."""
-
-        env_requirements = {
-            "umami": ["UMAMI_API_KEY"],
-            "gsc": ["GSC_SERVICE_ACCOUNT_FILE", "GSC_SITE_URL"],
-            "youtube": ["YOUTUBE_API_KEY", "YOUTUBE_CHANNEL_ID"],
-            "mastodon": ["MASTODON_ACCESS_TOKEN", "MASTODON_ACCOUNT_ID"],
-            "bluesky": ["BLUESKY_IDENTIFIER", "BLUESKY_PASSWORD"],
-            "linkedin": ["LINKEDIN_ACCESS_TOKEN", "LINKEDIN_ORGANIZATION_ID"],
-            "instagram": ["INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_BUSINESS_ACCOUNT_ID"],
-        }
-
-        required = env_requirements.get(platform, [])
-        return all(os.environ.get(var) for var in required)
+                self._log(f"Error loading {platform}: {e}")
 
     def _initialize(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle initialize request"""
-        # Initialize each connector
-        for platform, connector in self.connectors.items():
+        """Initialize each connector."""
+        for key, connector in self.connectors.items():
             try:
                 if hasattr(connector, "authenticate"):
                     connector.authenticate()
-                self._log(f"Initialized connector: {platform}")
+                self._log(f"Initialized: {key}")
             except Exception as e:
-                self._log(f"Failed to initialize {platform}: {e}")
+                self._log(f"Failed to initialize {key}: {e}")
 
         self.initialized = True
 
@@ -130,45 +175,18 @@ class MultiPlatformServer:
                 },
                 "serverInfo": {
                     "name": "multi-platform-analytics-mcp",
-                    "version": "1.0.0",
+                    "version": "2.0.0",
+                    "connectors": list(self.connectors.keys()),
                 },
             },
         )
 
     def _list_tools(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tools/list request"""
+        """Handle tools/list request."""
         tools = [
             {
                 "name": "get_all_metrics",
-                "description": "Get metrics from all configured platforms for a date range",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "start_date": {
-                            "type": "string",
-                            "format": "date",
-                            "description": "Start date in YYYY-MM-DD format",
-                        },
-                        "end_date": {
-                            "type": "string",
-                            "format": "date",
-                            "description": "End date in YYYY-MM-DD format",
-                        },
-                        "platforms": {
-                            "type": "array",
-                            "items": {
-                                "type": "string",
-                                "enum": list(self.connectors.keys())
-                            },
-                            "description": "Specific platforms to query (default: all)",
-                        },
-                    },
-                    "required": ["start_date", "end_date"],
-                },
-            },
-            {
-                "name": "get_cross_platform_summary",
-                "description": "Get unified summary metrics across all platforms",
+                "description": "Get metrics from all configured platforms and profiles",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -188,20 +206,40 @@ class MultiPlatformServer:
             },
             {
                 "name": "get_platform_status",
-                "description": "Get connection status for all platforms",
+                "description": "Get connection status for all configured connector profiles",
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
                 },
             },
-            # Add platform-specific tools
+            {
+                "name": "get_cross_platform_summary",
+                "description": "Get unified summary metrics across all platforms and profiles",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "start_date": {
+                            "type": "string",
+                            "format": "date",
+                            "description": "Start date in YYYY-MM-DD format",
+                        },
+                        "end_date": {
+                            "type": "string",
+                            "format": "date",
+                            "description": "End date in YYYY-MM-DD format",
+                        },
+                    },
+                    "required": ["start_date", "end_date"],
+                },
+            },
+            # Per-profile platform tools
             *self._get_platform_tools()
         ]
 
         return self._success_response(request.get("id"), {"tools": tools})
 
     def _get_platform_tools(self) -> List[Dict[str, Any]]:
-        """Get tools for each configured platform."""
+        """Generate per-profile tools for each configured platform."""
         platform_tools = []
 
         platform_descriptions = {
@@ -210,12 +248,11 @@ class MultiPlatformServer:
                 "websites": "List all websites tracked by Umami",
             },
             "gsc": {
-                "metrics": "Get Google Search Console metrics (impressions, clicks, CTR, position)",
+                "metrics": "Get Google Search Console metrics (impressions, clicks, CTR)",
                 "queries": "Get top search queries from GSC",
-                "pages": "Get pages with search performance",
             },
             "youtube": {
-                "metrics": "Get YouTube video metrics (views, watch time, impressions)",
+                "metrics": "Get YouTube video metrics (views, watch time)",
                 "videos": "Get videos with statistics",
                 "subscribers": "Get subscriber count",
             },
@@ -241,35 +278,88 @@ class MultiPlatformServer:
             },
         }
 
-        for platform in self.connectors.keys():
+        # Group connectors by platform
+        by_platform: Dict[str, list[str]] = {}
+        for key in self.connectors.keys():
+            platform, profile = key.split(":", 1)
+            if platform not in by_platform:
+                by_platform[platform] = []
+            by_platform[platform].append(profile)
+
+        for platform, profiles in by_platform.items():
             desc = platform_descriptions.get(platform, {})
 
-            # Metrics tool
-            platform_tools.append({
-                "name": f"get_{platform}_metrics",
-                "description": desc.get("metrics", f"Get metrics from {platform}"),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "start_date": {
-                            "type": "string",
-                            "format": "date",
-                            "description": "Start date in YYYY-MM-DD format",
+            for profile in profiles:
+                account_label = profile if profile != "default" else "personal"
+                profile_tag = f"_{profile}" if profile != "default" else ""
+
+                platform_tools.append({
+                    "name": f"get_{platform}{profile_tag}_metrics",
+                    "description": (
+                        f"{desc.get('metrics', f'Get metrics from {platform}')} "
+                        f"[profile: {account_label}]"
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "start_date": {
+                                "type": "string",
+                                "format": "date",
+                                "description": "Start date in YYYY-MM-DD format",
+                            },
+                            "end_date": {
+                                "type": "string",
+                                "format": "date",
+                                "description": "End date in YYYY-MM-DD format",
+                            },
                         },
-                        "end_date": {
-                            "type": "string",
-                            "format": "date",
-                            "description": "End date in YYYY-MM-DD format",
-                        },
+                        "required": ["start_date", "end_date"],
                     },
-                    "required": ["start_date", "end_date"],
-                },
-            })
+                })
+
+                # Add profile-specific content/get tools if they exist
+                if desc.get("posts"):
+                    platform_tools.append({
+                        "name": f"get_{platform}{profile_tag}_posts",
+                        "description": (
+                            f"{desc.get('posts', f'Get {platform} content')} "
+                            f"[profile: {account_label}]"
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "start_date": {
+                                    "type": "string",
+                                    "format": "date",
+                                    "description": "Start date in YYYY-MM-DD format",
+                                },
+                                "end_date": {
+                                    "type": "string",
+                                    "format": "date",
+                                    "description": "End date in YYYY-MM-DD format",
+                                },
+                            },
+                            "required": ["start_date", "end_date"],
+                        },
+                    })
+
+                if desc.get("followers"):
+                    platform_tools.append({
+                        "name": f"get_{platform}{profile_tag}_followers",
+                        "description": (
+                            f"{desc.get('followers', f'Get {platform} followers')} "
+                            f"[profile: {account_label}]"
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {},
+                        },
+                    })
 
         return platform_tools
 
     def _call_tool(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tools/call request"""
+        """Handle tools/call request."""
         if not self.initialized:
             return self._error_response(
                 request.get("id"), -32000, "Server not initialized"
@@ -310,9 +400,9 @@ class MultiPlatformServer:
     def _execute_tool(
         self, tool_name: str, args: Dict[str, Any]
     ) -> Any:
-        """Execute a tool and return results"""
+        """Execute a tool and return results."""
 
-        # Multi-platform tools
+        # Global tools
         if tool_name == "get_platform_status":
             return self._get_platform_status()
 
@@ -322,70 +412,149 @@ class MultiPlatformServer:
         elif tool_name == "get_cross_platform_summary":
             return self._get_cross_platform_summary(args)
 
-        # Platform-specific tools - delegate to connectors
-        elif tool_name.startswith("get_") and tool_name.endswith("_metrics"):
-            platform = tool_name.replace("get_", "").replace("_metrics", "")
-            if platform in self.connectors:
-                return self._get_platform_metrics(platform, args)
-            else:
-                raise ValueError(f"Unknown platform: {platform}")
+        # Per-profile per-platform tools
+        # Parse pattern: get_{platform}_{PROFILE}_{action} or get_{platform}_{action}
+        # Remove 'get_' prefix
+        rest = tool_name[len("get_"):]  # e.g. "mastodon_STELLARWHISKERS_metrics"
 
-        else:
+        # Split into platform_and_profile and action
+        # Find the last 'metrics'/'posts'/'followers' to determine action
+        action_suffixes = ["_metrics", "_posts", "_followers"]
+        action = None
+        for suffix in action_suffixes:
+            if rest.endswith(suffix):
+                action = suffix[1:]  # remove leading underscore
+                rest = rest[:-len(suffix)]
+                break
+
+        if not action:
             raise ValueError(f"Unknown tool: {tool_name}")
 
+        # rest is now like "mastodon_STELLARWHISKERS" or just "mastodon"
+        parts = rest.split("_", 1)
+        platform = parts[0]
+        profile = "default"
+
+        if len(parts) > 1:
+            # Could be "mastodon" + "STELLARWHISKERS" but if platform name
+            # has underscores (unlikely for known platforms), this gets hairy.
+            # For known platforms, we know the platform name is first.
+            potential_profile = parts[1].upper()
+            test_key = f"{platform}:{potential_profile}"
+            if test_key in self.connectors:
+                profile = potential_profile
+            else:
+                # Try with original casing
+                test_key = f"{platform}:{parts[1]}"
+                if test_key in self.connectors:
+                    profile = parts[1]
+
+        connector_key = f"{platform}:{profile}"
+        connector = self.connectors.get(connector_key)
+        if not connector:
+            raise ValueError(f"No connector found for {connector_key}")
+
+        if action == "metrics":
+            start_date = date.fromisoformat(args["start_date"])
+            end_date = date.fromisoformat(args["end_date"])
+            metrics = connector.get_metrics(start_date, end_date)
+            return [
+                {
+                    "source": m.source,
+                    "account": m.account,
+                    "date": str(m.date),
+                    "metric_type": m.metric_type,
+                    "value": m.value,
+                    "dimensions": m.dimensions,
+                }
+                for m in metrics
+            ]
+
+        elif action == "posts":
+            start_date = date.fromisoformat(args["start_date"])
+            end_date = date.fromisoformat(args["end_date"])
+            content = connector.get_content(start_date, end_date)
+            return [
+                {
+                    "source": c.source,
+                    "account": c.account,
+                    "content_id": c.content_id,
+                    "content_type": c.content_type,
+                    "url": c.url,
+                    "title": c.title,
+                    "created_at": str(c.created_at),
+                    "author": c.author,
+                }
+                for c in content
+            ]
+
+        elif action == "followers":
+            sd = date.fromisoformat(args.get("start_date", date.today().isoformat()))
+            ed = date.fromisoformat(args.get("end_date", date.today().isoformat()))
+            audience = connector.get_audience(sd, ed)
+            return [
+                {
+                    "source": a.source,
+                    "account": a.account,
+                    "date": str(a.date),
+                    "segment": a.segment,
+                    "count": a.count,
+                }
+                for a in audience
+            ]
+
+        else:
+            raise ValueError(f"Unknown action '{action}' for tool {tool_name}")
+
     def _get_platform_status(self) -> Dict[str, Any]:
-        """Get connection status for all platforms."""
+        """Get connection status for all connector profiles."""
         status = {}
 
-        for platform, connector in self.connectors.items():
+        for key, connector in self.connectors.items():
             try:
                 if hasattr(connector, "test_connection"):
                     result = connector.test_connection()
-                    status[platform] = result.get("status", "unknown")
+                    status[key] = result.get("status", "unknown")
                 else:
-                    status[platform] = "configured"
+                    status[key] = "configured"
             except Exception as e:
-                status[platform] = f"error: {str(e)}"
+                status[key] = f"error: {str(e)}"
 
         return {
-            "platforms": status,
+            "connectors": status,
             "total_configured": len(self.connectors),
-            "message": f"{len(self.connectors)} platforms configured"
+            "message": f"{len(self.connectors)} connectors configured"
         }
 
-    def _get_all_metrics(self, args: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Get metrics from all configured platforms."""
+    def _get_all_metrics(self, args: Dict[str, Any]) -> Dict[str, list]:
+        """Get metrics from all configured connectors."""
         start_date = date.fromisoformat(args["start_date"])
         end_date = date.fromisoformat(args["end_date"])
-        platforms = args.get("platforms", list(self.connectors.keys()))
 
-        all_metrics = []
+        all_metrics: Dict[str, list] = {}
 
-        for platform in platforms:
-            if platform not in self.connectors:
-                continue
-
+        for key, connector in self.connectors.items():
             try:
-                connector = self.connectors[platform]
                 if hasattr(connector, "get_metrics"):
                     metrics = connector.get_metrics(start_date, end_date)
-                    all_metrics.extend([
+                    all_metrics[key] = [
                         {
                             "source": m.source,
+                            "account": m.account,
                             "date": str(m.date),
                             "metric_type": m.metric_type,
                             "value": m.value,
                             "dimensions": m.dimensions,
                         }
                         for m in metrics
-                    ])
+                    ]
             except Exception as e:
-                self._log(f"Error getting metrics from {platform}: {e}")
+                all_metrics[key] = {"error": str(e)}
 
         return all_metrics
 
     def _get_cross_platform_summary(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get unified summary across all platforms."""
+        """Get unified summary across all connectors."""
         start_date = date.fromisoformat(args["start_date"])
         end_date = date.fromisoformat(args["end_date"])
 
@@ -394,69 +563,36 @@ class MultiPlatformServer:
                 "start": str(start_date),
                 "end": str(end_date),
             },
-            "platforms": {},
+            "connectors": {},
             "totals": {},
         }
 
-        for platform, connector in self.connectors.items():
+        for key, connector in self.connectors.items():
             try:
                 if hasattr(connector, "get_metrics"):
                     metrics = connector.get_metrics(start_date, end_date)
 
-                    # Aggregate by metric type
-                    platform_totals: Dict[str, float] = {}
+                    connector_totals: Dict[str, float] = {}
                     for m in metrics:
                         metric_type = m.metric_type
-                        if metric_type not in platform_totals:
-                            platform_totals[metric_type] = 0
-                        platform_totals[metric_type] += m.value
+                        if metric_type not in connector_totals:
+                            connector_totals[metric_type] = 0
+                        connector_totals[metric_type] += m.value
 
-                    summary["platforms"][platform] = platform_totals
+                    summary["connectors"][key] = connector_totals
 
-                    # Add to global totals
-                    for metric_type, value in platform_totals.items():
+                    for metric_type, value in connector_totals.items():
                         if metric_type not in summary["totals"]:
                             summary["totals"][metric_type] = 0
                         summary["totals"][metric_type] += value
 
             except Exception as e:
-                self._log(f"Error summarizing {platform}: {e}")
-                summary["platforms"][platform] = {"error": str(e)}
+                summary["connectors"][key] = {"error": str(e)}
 
         return summary
 
-    def _get_platform_metrics(
-        self,
-        platform: str,
-        args: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """Get metrics from a specific platform."""
-        start_date = date.fromisoformat(args["start_date"])
-        end_date = date.fromisoformat(args["end_date"])
-
-        if platform not in self.connectors:
-            raise ValueError(f"Unknown platform: {platform}")
-
-        connector = self.connectors[platform]
-
-        if not hasattr(connector, "get_metrics"):
-            raise ValueError(f"Platform {platform} does not support metrics")
-
-        metrics = connector.get_metrics(start_date, end_date)
-
-        return [
-            {
-                "source": m.source,
-                "date": str(m.date),
-                "metric_type": m.metric_type,
-                "value": m.value,
-                "dimensions": m.dimensions,
-            }
-            for m in metrics
-        ]
-
     def _handle_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Handle incoming JSON-RPC message"""
+        """Handle incoming JSON-RPC message."""
         method = message.get("method")
 
         if method == "initialize":
@@ -475,7 +611,7 @@ class MultiPlatformServer:
             )
 
     def run(self) -> None:
-        """Main server loop - read from stdin, write to stdout"""
+        """Main server loop - read from stdin, write to stdout."""
         try:
             for line in sys.stdin:
                 line = line.strip()
@@ -484,15 +620,24 @@ class MultiPlatformServer:
 
                 try:
                     message = json.loads(line)
+                except json.JSONDecodeError as e:
+                    self._log(f"Invalid JSON: {e}")
+                    self._send_response(
+                        self._error_response(None, -32700, f"Parse error: {e}")
+                    )
+                    continue
+
+                try:
                     response = self._handle_message(message)
                     if response:
                         self._send_response(response)
-
-                except json.JSONDecodeError as e:
-                    error_response = self._error_response(
-                        None, -32700, f"Parse error: {e}"
+                except Exception as e:
+                    self._log(f"Error handling message: {e}")
+                    self._send_response(
+                        self._error_response(
+                            message.get("id"), -32603, f"Internal error: {e}"
+                        )
                     )
-                    self._send_response(error_response)
 
         except KeyboardInterrupt:
             pass
